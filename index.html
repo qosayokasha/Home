@@ -1,0 +1,334 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="مصاريف البيت">
+<meta name="theme-color" content="#0f766e">
+<title>مصاريف البيت</title>
+<link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#eef2f1;--card:#fff;--ink:#12312e;--mut:#5d7471;--acc:#0f766e;--line:#d5e0de;--bad:#c2410c;--ok:#15803d}
+@media(prefers-color-scheme:dark){:root{--bg:#0d1a19;--card:#152826;--ink:#e6f1ef;--mut:#8fa9a5;--line:#27403d;--acc:#2dd4bf}}
+*{box-sizing:border-box}html,body{margin:0}
+body{font:16px/1.6 Tajawal,system-ui,sans-serif;background:var(--bg);color:var(--ink);padding:env(safe-area-inset-top) 0 calc(76px + env(safe-area-inset-bottom))}
+header{position:sticky;top:0;z-index:5;background:var(--acc);color:#fff;padding:calc(env(safe-area-inset-top) + 8px) 14px 10px;display:flex;align-items:center;gap:8px}
+header b{flex:1;font-size:18px}header button{background:#ffffff30;color:#fff;border:0;border-radius:10px;min-width:44px;height:44px;font-size:18px}
+#sy{font-size:12px;padding:3px 9px;border-radius:99px;background:#ffffff30}
+main{padding:12px;max-width:760px;margin:auto}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px;margin-bottom:10px;display:flex;flex-direction:column;gap:8px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px}.grid .card{margin:0;gap:2px}
+.grid small,.mut{color:var(--mut);font-size:13px}.grid b{font-size:18px}
+input,select,button,textarea{font:inherit;color:inherit;min-height:46px;border-radius:10px;border:1px solid var(--line);background:var(--bg);padding:6px 10px;width:100%}
+input[type=checkbox]{width:22px;min-height:22px;vertical-align:middle}
+button{cursor:pointer;width:auto}.pri{background:var(--acc);color:#fff;border:0;font-weight:700;width:100%}
+.danger{color:var(--bad)}.seg{display:flex;gap:6px}.seg button{flex:1}.seg .on{background:var(--acc);color:#fff;border:0}
+nav{position:fixed;bottom:0;inset-inline:0;display:flex;background:var(--card);border-top:1px solid var(--line);padding-bottom:env(safe-area-inset-bottom)}
+nav button{flex:1;border:0;background:none;border-radius:0;min-height:58px;font-size:12px;color:var(--mut)}nav .on{color:var(--acc);font-weight:700}
+.row{display:flex;justify-content:space-between;gap:8px;align-items:center}.acts{display:flex;gap:6px;flex-wrap:wrap}.acts button{min-height:38px;font-size:14px}
+.bar{height:8px;background:var(--line);border-radius:9px;overflow:hidden}.bar i{display:block;height:100%;background:var(--acc)}
+.al{padding:10px;border-radius:10px;background:#fed7aa;color:#7c2d12;margin-bottom:10px}
+.tag{font-size:12px;padding:2px 8px;border-radius:99px;background:var(--line)}
+#toast{position:fixed;top:70px;inset-inline:12px;background:#111;color:#fff;padding:10px;border-radius:10px;display:none;z-index:9;text-align:center}
+canvas{max-height:260px}h3{margin:6px 0}textarea{min-height:240px;direction:ltr;font:12px monospace}
+.out{color:var(--bad)}.inn{color:var(--ok)}
+</style>
+</head>
+<body>
+<div id="toast"></div><div id="app"></div>
+
+<script type="text/plain" id="sql">
+-- شغّل هذا الملف كاملًا مرة واحدة في Supabase > SQL Editor
+create table households(id uuid primary key default gen_random_uuid(),name text not null,invite_code text not null unique default substr(replace(gen_random_uuid()::text,'-',''),1,12),created_at timestamptz default now());
+create table members(household_id uuid references households on delete cascade,user_id uuid references auth.users on delete cascade,role text not null default 'member' check(role in('owner','member')),primary key(household_id,user_id));
+create table tx(id uuid primary key,household_id uuid not null references households on delete cascade,kind text not null check(kind in('expense','income')),date date not null,category text not null,description text,amount_minor bigint not null check(amount_minor>0),method text,payer text,notes text,counted boolean not null default true,created_by uuid default auth.uid(),updated_at timestamptz not null default now());
+create table budgets(household_id uuid references households on delete cascade,month text not null,category text not null default '',amount_minor bigint not null check(amount_minor>=0),primary key(household_id,month,category));
+create table bills(id uuid primary key,household_id uuid not null references households on delete cascade,name text not null,amount_minor bigint not null check(amount_minor>0),due date not null,notes text,unique(household_id,name,due));
+create table bill_payments(id uuid primary key,bill_id uuid not null references bills on delete cascade,household_id uuid not null references households on delete cascade,amount_minor bigint not null check(amount_minor>0),date date not null,created_by uuid default auth.uid());
+create table debts(id uuid primary key,household_id uuid not null references households on delete cascade,party text not null,direction text not null check(direction in('owe','owed')),amount_minor bigint not null check(amount_minor>0),date date not null,due date,notes text);
+create table debt_payments(id uuid primary key,debt_id uuid not null references debts on delete cascade,household_id uuid not null references households on delete cascade,amount_minor bigint not null check(amount_minor>0),date date not null,created_by uuid default auth.uid());
+create index on tx(household_id,date);create index on bill_payments(bill_id);create index on debt_payments(debt_id);
+
+create function touch() returns trigger language plpgsql as $$begin new.updated_at=now();return new;end$$;
+create trigger tx_touch before update on tx for each row execute function touch();
+
+create function is_member(h uuid) returns boolean language sql security definer stable set search_path=public as $$select exists(select 1 from members where household_id=h and user_id=auth.uid())$$;
+
+do $$ declare t text; begin
+ foreach t in array array['tx','budgets','bills','bill_payments','debts','debt_payments'] loop
+  execute format('alter table %I enable row level security',t);
+  execute format('create policy "member_all" on %I for all to authenticated using(is_member(household_id)) with check(is_member(household_id))',t);
+  execute format('alter publication supabase_realtime add table %I',t);
+ end loop; end $$;
+
+alter table households enable row level security;
+alter table members enable row level security;
+create policy "hh_read" on households for select to authenticated using(is_member(id));
+create policy "mem_read" on members for select to authenticated using(is_member(household_id));
+
+create function create_household(n text) returns uuid language plpgsql security definer set search_path=public as $$declare h uuid;begin
+ if auth.uid() is null then raise exception 'auth'; end if;
+ insert into households(name) values(n) returning id into h;
+ insert into members(household_id,user_id,role) values(h,auth.uid(),'owner');return h;end$$;
+create function join_household(code text) returns uuid language plpgsql security definer set search_path=public as $$declare h uuid;begin
+ if auth.uid() is null then raise exception 'auth'; end if;
+ select id into h from households where invite_code=code;
+ if h is null then raise exception 'bad code'; end if;
+ insert into members(household_id,user_id) values(h,auth.uid()) on conflict do nothing;return h;end$$;
+revoke execute on function create_household(text),join_household(text) from public,anon;
+grant execute on function create_household(text),join_household(text) to authenticated;
+</script>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+// ===== الإعداد: ضع هنا رابط مشروع Supabase والمفتاح العام (anon) فقط. لا تضع service_role أبدًا =====
+const CFG=JSON.parse(localStorage.getItem('he_cfg')||'null')||{url:'PASTE_SUPABASE_URL',key:'PASTE_SUPABASE_ANON_KEY'}; // تُدخل من داخل التطبيق عند أول تشغيل
+
+const $=s=>document.querySelector(s),esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const money=m=>(m/100).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})+' ₪';
+const toMinor=v=>Math.round(parseFloat(String(v).replace(',','.'))*100);
+const sum=a=>a.reduce((s,x)=>s+x.amount_minor,0),uid=()=>crypto.randomUUID();
+const today=()=>{const d=new Date();return new Date(d-d.getTimezoneOffset()*6e4).toISOString().slice(0,10)};
+const shift=(m,d)=>{const[y,n]=m.split('-').map(Number),x=new Date(y,n-1+d,1);return x.getFullYear()+'-'+String(x.getMonth()+1).padStart(2,'0')};
+const mlabel=m=>{const[y,n]=m.split('-');return new Date(y,n-1).toLocaleDateString('ar',{month:'long',year:'numeric'})};
+const EXP=['الإيجار','الطعام والبقالة','مياه الشرب','المياه المالحة ومياه المنزل','الكهرباء','الإنترنت والاتصالات','الغاز والحطب','الصحة والأدوية','المواصلات','الملابس','مستلزمات المنزل','مصاريف عائلية وشخصية','مصاريف أخرى'];
+const INC=['دخل من العمل','حوالات الأهل والأصدقاء','مساعدات وتبرعات','دخل من تجارة أو عمل حر','مصادر دخل أخرى'];
+const PAY=['نقدًا','بطاقة','تحويل بنكي','تطبيق دفع'];
+const T={tx:'tx',budgets:'budgets',bills:'bills',bill_payments:'bp',debts:'debts',debt_payments:'dp'};
+const S={user:null,hh:null,code:'',tab:'home',month:today().slice(0,7),tx:[],budgets:[],bills:[],bp:[],debts:[],dp:[],sync:'synced',edit:null,kind:'expense',q:'',fid:null};
+let sb,CH=[],chan=null,flushing=false,Q=JSON.parse(localStorage.getItem('he_q')||'[]');
+const persistQ=()=>localStorage.setItem('he_q',JSON.stringify(Q)),sleep=ms=>new Promise(r=>setTimeout(r,ms));
+
+function toast(t){const e=$('#toast');e.textContent=t;e.style.display='block';setTimeout(()=>e.style.display='none',3200)}
+const SY={saving:'جارٍ الحفظ…',synced:'تمت المزامنة',offline:'غير متصل',failed:'فشلت المزامنة'};
+function setSync(s){S.sync=s;const e=$('#sy');if(e)e.textContent=SY[s]+(Q.length?' ('+Q.length+' معلّق)':'')}
+
+// ---------- الوصول للبيانات ----------
+const keyOf=(t,r)=>t=='budgets'?r.month+'|'+r.category:r.id;
+function applyLocal(t,rows){[].concat(rows).forEach(r=>{const a=S[T[t]],k=keyOf(t,r),i=a.findIndex(x=>keyOf(t,x)==k);if(i<0)a.push(r);else a[i]={...a[i],...r}})}
+function dropLocal(t,m){S[T[t]]=S[T[t]].filter(x=>!Object.keys(m).every(k=>x[k]==m[k]));S.bp=S.bp.filter(p=>S.bills.some(b=>b.id==p.bill_id));S.dp=S.dp.filter(p=>S.debts.some(d=>d.id==p.debt_id))}
+// كل تغيير يُطبَّق فورًا على الجهاز ثم يُرسل؛ إن لم يتوفر إنترنت يدخل طابورًا محفوظًا ويُرسل بالترتيب عند العودة
+async function save(table,row,oc){applyLocal(table,row);return push({op:'up',table,row,oc})}
+async function send(o){
+  setSync('saving');
+  for(let i=0;i<2;i++){
+    const{error}=o.op=='up'?await sb.from(o.table).upsert(o.row,o.oc?{onConflict:o.oc}:undefined):await sb.from(o.table).delete().match(o.match);
+    if(!error)return 'ok';
+    if(error.code&&/^(23|42|PGRST)/.test(error.code)){toast('رُفض الحفظ: '+error.message);return 'fatal'}
+    await sleep(600*(i+1));
+  }
+  return 'retry';
+}
+async function push(o){
+  if(!navigator.onLine||Q.length||flushing){Q.push(o);persistQ();if(navigator.onLine)flush();else{setSync('offline');toast('لا يوجد إنترنت: حُفظ على الجهاز وسيُرسل تلقائيًا')}return true}
+  const r=await send(o);
+  if(r=='ok'){setSync('synced');return true}
+  if(r=='fatal'){await load(o.table);return false}
+  Q.push(o);persistQ();setSync('offline');toast('تعذّر الاتصال: حُفظ على الجهاز وسيُرسل تلقائيًا');return true;
+}
+async function flush(){
+  if(!sb||flushing||!Q.length||!navigator.onLine)return;flushing=true;
+  while(Q.length){const r=await send(Q[0]);if(r=='retry'){flushing=false;setSync('offline');return}Q.shift();persistQ()}
+  flushing=false;await loadAll();setSync('synced');render();toast('تمت مزامنة التغييرات المحفوظة على الجهاز');
+}
+async function load(t){if(Q.length||flushing)return;const{data,error}=await sb.from(t).select('*').eq('household_id',S.hh);if(error){setSync(navigator.onLine?'failed':'offline');return}S[T[t]]=data}
+const loadAll=()=>Promise.all(Object.keys(T).map(load));
+function subscribe(){
+  if(chan)sb.removeChannel(chan);
+  chan=sb.channel('hh-'+S.hh);
+  Object.keys(T).forEach(t=>chan.on('postgres_changes',{event:'*',schema:'public',table:t},()=>load(t).then(soft)));
+  chan.subscribe(st=>{if(st==='SUBSCRIBED')setSync('synced');else if(st==='CHANNEL_ERROR'||st==='TIMED_OUT')setSync(navigator.onLine?'failed':'offline')});
+}
+function soft(){if(document.activeElement&&document.activeElement.matches('input,select,textarea'))return;render()}
+async function enter(){
+  if(!S.user){S.hh=null;render();return}
+  const ck='he_hh_'+S.user.id;let c=null;try{c=JSON.parse(localStorage.getItem(ck))}catch(_){}
+  if(c){S.hh=c.hh;S.code=c.code;Object.assign(S,c.d);render()} // عرض النسخة المحفوظة فورًا (تعمل بدون إنترنت)
+  const{data,error}=await sb.from('members').select('household_id').limit(1);
+  if(!error)S.hh=data&&data[0]?data[0].household_id:null;
+  else if(!c){setSync('offline');render();return}
+  if(S.hh){await flush();await loadAll();subscribe();const r=await sb.from('households').select('invite_code').eq('id',S.hh).single();if(r.data)S.code=r.data.invite_code}
+  render();
+}
+
+// ---------- الحسابات ----------
+const paid=b=>sum(S.bp.filter(p=>p.bill_id==b.id)),repaid=d=>sum(S.dp.filter(p=>p.debt_id==d.id));
+const mtx=(m,k)=>S.tx.filter(t=>t.date.startsWith(m)&&t.kind==k&&t.counted);
+const budOf=(m,c)=>{const b=S.budgets.find(x=>x.month==m&&x.category==c);return b?b.amount_minor:0};
+function byCat(m){const o={};mtx(m,'expense').forEach(t=>o[t.category]=(o[t.category]||0)+t.amount_minor);return o}
+
+// ---------- الواجهات ----------
+function authV(){return `<main><div class=card><h3>مصاريف البيت</h3><span class=mut>سجّل الدخول أو أنشئ حسابًا. لا يمكن لأي حساب جديد رؤية بيانات بيت آخر.</span>
+<input id=em type=email placeholder="البريد الإلكتروني" autocomplete=email><input id=pw type=password placeholder="كلمة المرور (8 أحرف على الأقل)" autocomplete=current-password>
+<button class=pri data-a=login>دخول</button><div class=acts><button data-a=reg>إنشاء حساب</button><button data-a=reset>نسيت كلمة المرور</button></div></div></main>`}
+function hhV(){return `<main><div class=card><h3>مرحبًا</h3><span class=mut>أنشئ مساحة لبيتك، أو انضم إلى مساحة موجودة برمز الدعوة.</span>
+<input id=hn placeholder="اسم البيت"><button class=pri data-a=mkhh>إنشاء مساحة جديدة</button></div>
+<div class=card><input id=ic placeholder="رمز الدعوة"><button data-a=join>انضمام</button></div><button data-a=out>تسجيل الخروج</button></main>`}
+function shell(body){
+  const N=[['home','الرئيسية'],['tx','المعاملات'],['bud','الميزانية'],['bills','الفواتير'],['debts','الديون']];
+  return `<header><button data-a=mon data-d=1 aria-label="التالي">›</button><b>${mlabel(S.month)}</b><button data-a=mon data-d=-1 aria-label="السابق">‹</button><span id=sy>${SY[S.sync]}</span><button data-a=tab data-t=set aria-label="الإعدادات">⚙</button></header>
+<main>${body}</main><nav>${N.map(([k,l])=>`<button data-a=tab data-t=${k} class="${S.tab==k?'on':''}">${l}</button>`).join('')}</nav>`}
+function home(){
+  const m=S.month,ex=sum(mtx(m,'expense')),inc=sum(mtx(m,'income')),bud=budOf(m,''),pe=sum(mtx(shift(m,-1),'expense'));
+  const left=bud-ex,pct=bud?ex/bud*100:0,n=S.tx.filter(t=>t.date.startsWith(m)).length;
+  const bo=S.bills.reduce((s,b)=>s+Math.max(0,b.amount_minor-paid(b)),0);
+  const rem=d=>d.amount_minor-repaid(d),owe=S.debts.filter(d=>d.direction=='owe').reduce((s,d)=>s+rem(d),0),owed=S.debts.filter(d=>d.direction=='owed').reduce((s,d)=>s+rem(d),0);
+  const diff=pe?Math.round((ex-pe)/pe*100):null;
+  const al=bud?(pct>=100?'تجاوزتم الميزانية (100%)':pct>=90?'وصلتم إلى 90% من الميزانية':pct>=75?'وصلتم إلى 75% من الميزانية':''):'';
+  const c=(l,v,x='')=>`<div class=card><small>${l}</small><b class="${x}">${v}</b></div>`;
+  return `${al?`<div class=al>⚠ ${al}</div>`:''}<div class=grid>
+${c('مصاريف الشهر',money(ex),'out')}${c('دخل الشهر',money(inc),'inn')}${c('الميزانية',bud?money(bud):'غير محددة')}${c('المتبقي من الميزانية',bud?money(left):'—',left<0?'out':'')}
+${c('صافي التدفق النقدي',money(inc-ex),inc-ex<0?'out':'inn')}${c('نسبة استهلاك الميزانية',bud?pct.toFixed(0)+'%':'—')}
+${c('فواتير وإيجار مستحقة',money(bo))}${c('عدد المعاملات',n)}
+${c('ديون علينا للآخرين',money(owe))}${c('ديون لنا عند الآخرين',money(owed))}</div>
+<div class=card><small>مقارنة بالشهر السابق (${money(pe)})</small><b>${diff===null?'—':(diff>0?'▲ ':'▼ ')+Math.abs(diff)+'%'}</b></div>
+<div class=card><h3>توزيع المصاريف حسب الفئة</h3>${ex?'<canvas id=c1></canvas>':'<span class=mut>لا توجد مصاريف في هذا الشهر.</span>'}</div>
+<div class=card><h3>الدخل والمصاريف (آخر 6 أشهر)</h3><canvas id=c2></canvas></div>`}
+function charts(){
+  if(!window.Chart)return;CH.forEach(c=>c.destroy());CH=[];
+  const P=['#0f766e','#c2410c','#2563eb','#ca8a04','#9333ea','#db2777','#16a34a','#0891b2','#64748b','#dc2626','#4f46e5','#65a30d','#a16207'],o=byCat(S.month),a=$('#c1');
+  if(a)CH.push(new Chart(a,{type:'doughnut',data:{labels:Object.keys(o),datasets:[{data:Object.values(o).map(v=>v/100),backgroundColor:P}]},options:{plugins:{legend:{position:'bottom',rtl:true,labels:{font:{family:'Tajawal'}}}}}}));
+  const ms=[5,4,3,2,1,0].map(i=>shift(S.month,-i));
+  CH.push(new Chart($('#c2'),{type:'bar',data:{labels:ms.map(mlabel),datasets:[{label:'دخل',data:ms.map(m=>sum(mtx(m,'income'))/100),backgroundColor:'#15803d'},{label:'مصاريف',data:ms.map(m=>sum(mtx(m,'expense'))/100),backgroundColor:'#c2410c'}]},options:{plugins:{legend:{rtl:true}}}}));
+}
+function txV(){
+  const e=S.edit&&S.tx.find(t=>t.id==S.edit)||{},k=e.kind||S.kind,q=S.q.trim();
+  const L=S.tx.filter(t=>t.date.startsWith(S.month)&&(!q||[t.description,t.category,t.notes,t.payer].join(' ').includes(q))).sort((a,b)=>b.date.localeCompare(a.date)).slice(0,300);
+  return `<form id=fx class=card><div class=seg><button type=button data-a=kind data-k=expense class="${k=='expense'?'on':''}">مصروف</button><button type=button data-a=kind data-k=income class="${k=='income'?'on':''}">دخل</button></div>
+<input type=date name=date value="${e.date||today()}" required>
+<input name=category list=cl placeholder="الفئة (اختر أو اكتب فئة جديدة)" value="${esc(e.category)}" required><datalist id=cl>${(k=='expense'?EXP:INC).map(c=>`<option>${c}</option>`).join('')}</datalist>
+<input name=description placeholder="الوصف" value="${esc(e.description)}">
+<input name=amount type=number step=0.01 min=0.01 inputmode=decimal placeholder="المبلغ (₪)" value="${e.amount_minor?e.amount_minor/100:''}" required>
+<select name=method>${PAY.map(p=>`<option ${e.method==p?'selected':''}>${p}</option>`).join('')}</select>
+<input name=payer placeholder="من دفع؟ (اختياري)" value="${esc(e.payer)}"><input name=notes placeholder="ملاحظات (اختياري)" value="${esc(e.notes)}">
+${k=='income'?`<label><input type=checkbox name=counted ${e.counted===false?'':'checked'}> يُحتسب دخلًا (أزل العلامة للقروض أو التحويلات بين حساباتكم)</label>`:''}
+<button class=pri>${e.id?'حفظ التعديل':'إضافة'}</button>${e.id?'<button type=button data-a=cancel>إلغاء التعديل</button>':''}</form>
+<input placeholder="بحث في معاملات الشهر" value="${esc(S.q)}" data-a=q>
+${L.length?L.map(t=>`<div class=card><div class=row><b>${esc(t.category)}</b><b class="${t.kind=='expense'?'out':'inn'}">${t.kind=='expense'?'−':'+'}${money(t.amount_minor)}</b></div>
+<span class=mut>${t.date} · ${t.kind=='expense'?'مصروف':t.counted?'دخل':'تحويل/قرض (غير محتسب)'} · ${esc(t.method)}${t.description?' · '+esc(t.description):''}${t.payer?' · '+esc(t.payer):''}${t.notes?' · '+esc(t.notes):''}</span>
+<div class=acts><button data-a=edit data-id=${t.id}>تعديل</button><button class=danger data-a=del data-t=tx data-id=${t.id}>حذف</button></div></div>`).join(''):'<div class="card mut">لا توجد معاملات. أضف أول معاملة من النموذج أعلاه.</div>'}`}
+function budV(){
+  const m=S.month,o=byCat(m),tot=sum(mtx(m,'expense')),b0=budOf(m,'');
+  const row=(l,c,act,bud)=>{const p=bud?act/bud*100:0;return `<div class=card><div class=row><b>${l}</b><span class=mut>الفعلي ${money(act)}</span></div>
+<input type=number step=0.01 min=0 inputmode=decimal placeholder="الميزانية (₪)" data-bud="${esc(c)}" value="${bud?bud/100:''}">
+${bud?`<div class=bar><i style="width:${Math.min(100,p)}%;background:${p>=100?'var(--bad)':'var(--acc)'}"></i></div><span class=mut>المتبقي ${money(bud-act)} · المستخدم ${p.toFixed(0)}%</span>`:''}</div>`};
+  const cats=[...new Set([...EXP,...Object.keys(o),...S.budgets.filter(b=>b.month==m).map(b=>b.category).filter(Boolean)])];
+  return row('الميزانية الشهرية الكلية','',tot,b0)+cats.map(c=>row(esc(c),c,o[c]||0,budOf(m,c))).join('')+`<button data-a=cpbud>نسخ ميزانية الشهر السابق</button>`}
+function billsV(){
+  const L=[...S.bills].sort((a,b)=>b.due.localeCompare(a.due));
+  return `<form id=fb class=card><h3>فاتورة جديدة</h3><input name=name placeholder="الاسم (إيجار، كهرباء…)" list=cl2 required><datalist id=cl2>${EXP.map(c=>`<option>${c}</option>`).join('')}</datalist>
+<input name=amount type=number step=0.01 min=0.01 inputmode=decimal placeholder="المبلغ المستحق (₪)" required><input name=due type=date value="${today()}" required><input name=notes placeholder="ملاحظات"><button class=pri>إضافة</button></form>
+${L.length?L.map(b=>{const p=paid(b),r=b.amount_minor-p,st=r<=0?'مدفوعة':p>0?'مدفوعة جزئيًا':'غير مدفوعة';
+return `<div class=card><div class=row><b>${esc(b.name)}</b><span class=tag>${st}</span></div><span class=mut>الاستحقاق ${b.due} · الإجمالي ${money(b.amount_minor)} · المدفوع ${money(p)}</span><b>المتبقي ${money(Math.max(0,r))}</b>
+${S.bp.filter(x=>x.bill_id==b.id).sort((a,b)=>a.date.localeCompare(b.date)).map(x=>`<span class=mut>• ${x.date}: ${money(x.amount_minor)}</span>`).join('')}${b.notes?`<span class=mut>${esc(b.notes)}</span>`:''}
+<div class=acts>${r>0?`<button data-a=bpay data-id=${b.id}>تسجيل دفعة</button>`:''}<button data-a=bnext data-id=${b.id}>نسخ للشهر القادم</button><button class=danger data-a=del data-t=bills data-id=${b.id}>حذف</button></div></div>`}).join(''):'<div class="card mut">لا توجد فواتير بعد.</div>'}`}
+function debtsV(){
+  return `<form id=fd class=card><h3>دين جديد</h3><select name=direction><option value=owe>علينا لشخص آخر</option><option value=owed>لنا عند شخص آخر</option></select>
+<input name=party placeholder="اسم الدائن أو المدين" required><input name=amount type=number step=0.01 min=0.01 inputmode=decimal placeholder="المبلغ الأصلي (₪)" required>
+<input name=date type=date value="${today()}" required><input name=due type=date><input name=notes placeholder="ملاحظات"><button class=pri>إضافة</button></form>
+${S.debts.length?S.debts.map(d=>{const p=repaid(d),r=d.amount_minor-p;
+return `<div class=card><div class=row><b>${esc(d.party)}</b><span class=tag>${d.direction=='owe'?'علينا':'لنا'}</span></div><span class=mut>${d.date}${d.due?' · الاستحقاق '+d.due:''} · الأصلي ${money(d.amount_minor)} · المسدد ${money(p)}</span><b>المتبقي ${money(Math.max(0,r))}</b>
+${S.dp.filter(x=>x.debt_id==d.id).sort((a,b)=>a.date.localeCompare(b.date)).map(x=>`<span class=mut>• ${x.date}: ${money(x.amount_minor)}</span>`).join('')}${d.notes?`<span class=mut>${esc(d.notes)}</span>`:''}
+<div class=acts>${r>0?`<button data-a=dpay data-id=${d.id}>تسجيل سداد</button>`:''}<button class=danger data-a=del data-t=debts data-id=${d.id}>حذف</button></div></div>`}).join(''):'<div class="card mut">لا توجد ديون مسجّلة.</div>'}`}
+function setV(){return `<div class=card><h3>الإعدادات</h3><span class=mut>رمز الدعوة لأفراد العائلة (شاركه معهم فقط): </span><b dir=ltr>${esc(S.code)}</b><span class=mut>الحساب: ${esc(S.user.email)}</span></div>
+<div class=card><button data-a=csv>تصدير المعاملات (CSV لـ Excel)</button><button data-a=bak>نسخة احتياطية كاملة (JSON)</button><button data-a=sqlv>عرض سكربت قاعدة البيانات</button><button class=danger data-a=out>تسجيل الخروج</button></div>
+<div class="card mut">البيانات كلها محفوظة في Supabase (السحابة). الجهاز يحتفظ بنسخة مؤقتة وبطابور التغييرات غير المُرسلة ليعمل التطبيق بدون إنترنت، وتُرسل تلقائيًا عند عودة الاتصال (إن تعدّل السجل نفسه على جهازين فآخر حفظ يغلب). الاستعادة تتم بإعادة إدخال النسخة من Supabase أو بطلب مني بناء أداة استعادة.</div>`}
+const VIEWS={home,tx:txV,bud:budV,bills:billsV,debts:debtsV,set:setV};
+function render(){
+  const a=$('#app');
+  if(S.hh&&S.user)try{localStorage.setItem('he_hh_'+S.user.id,JSON.stringify({hh:S.hh,code:S.code,d:{tx:S.tx,budgets:S.budgets,bills:S.bills,bp:S.bp,debts:S.debts,dp:S.dp}}))}catch(_){}
+  if(!S.user)a.innerHTML=authV();else if(!S.hh)a.innerHTML=hhV();
+  else{a.innerHTML=shell(VIEWS[S.tab]());if(S.tab=='home')charts()}
+}
+function setup(cfg=true){
+  $('#app').innerHTML=`<main>${cfg?`<div class=card><h3>الإعداد الأولي</h3><span>1) انسخ السكربت أدناه والصقه في Supabase ← SQL Editor ← Run.<br>2) من Supabase ← Project Settings ← API انسخ Project URL والمفتاح anon والصقهما هنا.</span>
+<input id=cu dir=ltr placeholder="Project URL (https://xxxx.supabase.co)"><input id=ck dir=ltr placeholder="anon public key"><button class=pri data-a=savecfg>حفظ والبدء</button></div>`:''}
+<div class=card><textarea readonly id=sq></textarea><button data-a=copysql>نسخ السكربت</button></div></main>`;
+  $('#sq').value=$('#sql').textContent.trim();
+}
+
+// ---------- الأحداث ----------
+const csvCell=c=>{let s=String(c??'');if(/^[=+\-@]/.test(s))s="'"+s;return '"'+s.replace(/"/g,'""')+'"'};
+function dl(n,t,ty){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([t],{type:ty}));a.download=n;a.click()}
+document.addEventListener('click',async e=>{
+  const b=e.target.closest('[data-a]');if(!b||b.tagName=='INPUT')return;const a=b.dataset.a,id=b.dataset.id;
+  try{
+  if(a=='login'||a=='reg'){const email=$('#em').value.trim(),password=$('#pw').value;if(password.length<8)return toast('كلمة المرور 8 أحرف على الأقل');
+    const r=a=='login'?await sb.auth.signInWithPassword({email,password}):await sb.auth.signUp({email,password});
+    if(r.error)toast(r.error.message);else if(a=='reg'&&!r.data.session)toast('تحقق من بريدك لتأكيد الحساب ثم سجّل الدخول')}
+  else if(a=='reset'){const email=$('#em').value.trim();if(!email)return toast('اكتب بريدك أولًا');const r=await sb.auth.resetPasswordForEmail(email,{redirectTo:location.href.split('#')[0]});toast(r.error?r.error.message:'أُرسل رابط إعادة التعيين إلى بريدك')}
+  else if(a=='out'){if(Q.length&&!confirm('لديك تغييرات لم تُرسل بعد وستُفقد إذا خرجت الآن. هل تريد الخروج؟'))return;Q=[];persistQ();if(S.user)localStorage.removeItem('he_hh_'+S.user.id);try{await sb.auth.signOut()}catch(_){}S.user=null;S.tx=[];S.bills=[];S.debts=[]}
+  else if(a=='mkhh'){const n=$('#hn').value.trim();if(!n)return toast('اكتب اسم البيت');const r=await sb.rpc('create_household',{n});if(r.error)toast(r.error.message);else enter()}
+  else if(a=='join'){const r=await sb.rpc('join_household',{code:$('#ic').value.trim()});if(r.error)toast('رمز الدعوة غير صحيح');else enter()}
+  else if(a=='tab'){S.tab=b.dataset.t;S.edit=null;render();scrollTo(0,0)}
+  else if(a=='mon'){S.month=shift(S.month,+b.dataset.d);render()}
+  else if(a=='kind'){S.kind=b.dataset.k;render()}
+  else if(a=='edit'){const t=S.tx.find(x=>x.id==id);S.edit=id;S.kind=t.kind;render();scrollTo(0,0)}
+  else if(a=='cancel'){S.edit=null;render()}
+  else if(a=='del'){if(!confirm('هل أنت متأكد من الحذف؟ لا يمكن التراجع.'))return;const t=b.dataset.t;dropLocal(t,{id});await push({op:'del',table:t,match:{id}});render()}
+  else if(a=='bpay'){const bl=S.bills.find(x=>x.id==id),r=bl.amount_minor-paid(bl),v=toMinor(prompt('مبلغ الدفعة بالشيكل (المتبقي '+money(r)+')')||'');
+    if(!(v>0))return;if(v>r)return toast('المبلغ أكبر من المتبقي');
+    const as=confirm('تسجيل هذه الدفعة أيضًا كمصروف؟\nاضغط «إلغاء» إذا كان مصروفها مسجّلًا من قبل (حتى لا يُحسب مرتين).'),pid=uid();
+    if(await save('bill_payments',{id:pid,bill_id:id,household_id:S.hh,amount_minor:v,date:today()})){
+      if(as)await save('tx',{id:pid,household_id:S.hh,kind:'expense',date:today(),category:bl.name,description:'دفعة فاتورة: '+bl.name,amount_minor:v,method:PAY[0],counted:true});
+      await loadAll();render()}}
+  else if(a=='bnext'){const bl=S.bills.find(x=>x.id==id),[y,m,d]=bl.due.split('-').map(Number),nx=new Date(y,m,Math.min(d,28));
+    const due=nx.getFullYear()+'-'+String(nx.getMonth()+1).padStart(2,'0')+'-'+String(nx.getDate()).padStart(2,'0');
+    if(S.bills.some(x=>x.name==bl.name&&x.due==due))return toast('فاتورة الشهر القادم موجودة مسبقًا');
+    if(await save('bills',{id:uid(),household_id:S.hh,name:bl.name,amount_minor:bl.amount_minor,due,notes:bl.notes},'household_id,name,due')){await load('bills');render()}}
+  else if(a=='dpay'){const d=S.debts.find(x=>x.id==id),r=d.amount_minor-repaid(d),v=toMinor(prompt('مبلغ السداد بالشيكل (المتبقي '+money(r)+')')||'');
+    if(!(v>0))return;if(v>r)return toast('المبلغ أكبر من المتبقي');
+    if(await save('debt_payments',{id:uid(),debt_id:id,household_id:S.hh,amount_minor:v,date:today()})){await load('debt_payments');render()}}
+  else if(a=='cpbud'){const p=S.budgets.filter(x=>x.month==shift(S.month,-1));if(!p.length)return toast('لا توجد ميزانية للشهر السابق');
+    if(await save('budgets',p.map(x=>({household_id:S.hh,month:S.month,category:x.category,amount_minor:x.amount_minor})),'household_id,month,category')){await load('budgets');render()}}
+  else if(a=='csv'){const R=[['التاريخ','النوع','الفئة','الوصف','المبلغ','طريقة الدفع','من دفع','ملاحظات','يُحتسب']].concat([...S.tx].sort((x,y)=>y.date.localeCompare(x.date)).map(t=>[t.date,t.kind=='expense'?'مصروف':'دخل',t.category,t.description,t.amount_minor/100,t.method,t.payer,t.notes,t.counted?'نعم':'لا']));
+    dl('home-expenses-'+today()+'.csv','\ufeff'+R.map(r=>r.map(csvCell).join(',')).join('\r\n'),'text/csv;charset=utf-8')}
+  else if(a=='bak')dl('home-expenses-backup-'+today()+'.json',JSON.stringify({exported:new Date().toISOString(),tx:S.tx,budgets:S.budgets,bills:S.bills,bill_payments:S.bp,debts:S.debts,debt_payments:S.dp},null,1),'application/json');
+  else if(a=='sqlv'){setup(false);$('#app').insertAdjacentHTML('beforeend','<main><button data-a=back>رجوع</button></main>')}
+  else if(a=='back')render();
+  else if(a=='savecfg'){const url=$('#cu').value.trim().replace(/\/$/,''),key=$('#ck').value.trim();if(!/^https:\/\/[a-z0-9-]+\.supabase\.co$/.test(url)||key.length<30)return toast('تأكد من الرابط والمفتاح');localStorage.setItem('he_cfg',JSON.stringify({url,key}));location.reload()}
+  else if(a=='copysql'){$('#sq').select();try{await navigator.clipboard.writeText($('#sq').value);toast('تم النسخ')}catch(_){toast('حدد النص وانسخه يدويًا')}}
+  }catch(err){setSync('failed');toast('حدث خطأ: '+err.message)}
+});
+document.addEventListener('input',e=>{if(e.target.dataset&&e.target.dataset.a=='q'){S.q=e.target.value;const p=e.target.selectionStart;render();const i=document.querySelector('[data-a=q]');i.focus();i.setSelectionRange(p,p)}});
+document.addEventListener('change',async e=>{
+  const el=e.target;if(el.dataset.bud===undefined)return;const c=el.dataset.bud,v=el.value===''?null:toMinor(el.value);
+  if(v===null||!(v>=0)){const m={household_id:S.hh,month:S.month,category:c};dropLocal('budgets',m);await push({op:'del',table:'budgets',match:m})}
+  else await save('budgets',{household_id:S.hh,month:S.month,category:c,amount_minor:v},'household_id,month,category');
+  render();
+});
+document.addEventListener('submit',async e=>{
+  e.preventDefault();const f=new FormData(e.target),id=e.target.id,btn=e.submitter;if(btn)btn.disabled=true;let ok=false;
+  try{
+  if(id=='fx'){const amt=toMinor(f.get('amount'));if(!(amt>0))return toast('أدخل مبلغًا صحيحًا');S.fid=S.fid||uid();
+    const row={id:S.edit||S.fid,household_id:S.hh,kind:S.kind,date:f.get('date'),category:f.get('category').trim(),description:f.get('description'),amount_minor:amt,method:f.get('method'),payer:f.get('payer'),notes:f.get('notes'),counted:S.kind=='expense'||f.has('counted')};
+    if(ok=await save('tx',row)){S.tx=S.tx.filter(x=>x.id!=row.id).concat(row);S.edit=null;S.fid=null}}
+  else if(id=='fb'){const amt=toMinor(f.get('amount'));if(!(amt>0))return toast('أدخل مبلغًا صحيحًا');
+    if(ok=await save('bills',{id:uid(),household_id:S.hh,name:f.get('name').trim(),amount_minor:amt,due:f.get('due'),notes:f.get('notes')},'household_id,name,due'))await load('bills')}
+  else if(id=='fd'){const amt=toMinor(f.get('amount'));if(!(amt>0))return toast('أدخل مبلغًا صحيحًا');
+    if(ok=await save('debts',{id:uid(),household_id:S.hh,party:f.get('party').trim(),direction:f.get('direction'),amount_minor:amt,date:f.get('date'),due:f.get('due')||null,notes:f.get('notes')}))await load('debts')}
+  }finally{if(btn)btn.disabled=false}
+  if(ok){toast('تم الحفظ');render()}
+});
+window.addEventListener('offline',()=>setSync('offline'));
+window.addEventListener('online',async()=>{if(!S.hh)return;if(Q.length)await flush();else{await loadAll();setSync('synced');render()}});
+
+// ---------- PWA: أيقونة وبيان ----------
+(function(){const c=document.createElement('canvas');c.width=c.height=180;const x=c.getContext('2d');x.fillStyle='#0f766e';x.fillRect(0,0,180,180);x.fillStyle='#fff';x.font='bold 110px sans-serif';x.textAlign='center';x.textBaseline='middle';x.fillText('₪',90,98);
+const u=c.toDataURL(),l=document.createElement('link');l.rel='apple-touch-icon';l.href=u;document.head.append(l);
+const m=document.createElement('link');m.rel='manifest';m.href=URL.createObjectURL(new Blob([JSON.stringify({name:'مصاريف البيت',short_name:'مصاريف',display:'standalone',dir:'rtl',lang:'ar',start_url:location.href.split('#')[0],background_color:'#0f766e',theme_color:'#0f766e',icons:[{src:u,sizes:'180x180',type:'image/png'}]})],{type:'application/manifest+json'}));document.head.append(m)})();
+
+// ---------- التشغيل ----------
+if('serviceWorker' in navigator&&location.protocol.startsWith('http'))navigator.serviceWorker.register('sw.js').catch(()=>{});
+if(CFG.url.startsWith('PASTE')||!window.supabase)setup();
+else{
+  sb=supabase.createClient(CFG.url,CFG.key,{auth:{persistSession:true,autoRefreshToken:true}});
+  sb.auth.onAuthStateChange((ev,s)=>{S.user=s?s.user:null;setTimeout(async()=>{
+    if(ev=='PASSWORD_RECOVERY'){const p=prompt('اكتب كلمة المرور الجديدة (8 أحرف على الأقل)');if(p&&p.length>=8){const r=await sb.auth.updateUser({password:p});toast(r.error?r.error.message:'تم تغيير كلمة المرور')}}
+    enter()},0)});
+}
+</script>
+</body>
+</html>
